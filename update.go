@@ -2,24 +2,29 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"github.com/pkg/errors"
 	"io"
-	"k8s.io/klog"
 	"net/http"
 	"os"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/pkg/errors"
+	"k8s.io/klog"
 )
 
 const (
+	priceDataUrl = "https://coroot.github.io/cloud-pricing/data/cloud-pricing.json.gz"
 	url          = "https://pricing.api.infracost.io/data-download/latest"
 	dataDir      = "./data"
 	dumpFileName = "cloud-pricing.json.gz"
+	dumpTimeout  = time.Second * 30
 )
 
 type Region string
@@ -192,32 +197,77 @@ type Model struct {
 }
 
 func main() {
-	apiKey := os.Getenv("INFRACOST_API_KEY")
+	// apiKey := os.Getenv("INFRACOST_API_KEY")
 
-	downloadUrl, err := getDownloadUrl(apiKey)
-	if err != nil {
+	// downloadUrl, err := getDownloadUrl(apiKey)
+	// if err != nil {
+	// 	klog.Exitln(err)
+	// }
+	// dbFile, err := os.CreateTemp("", "cloud_pricing*.csv")
+	// if err != nil {
+	// 	klog.Exitln(err)
+	// }
+	// defer os.Remove(dbFile.Name())
+	// klog.Infof("downloading DB to %s", dbFile.Name())
+	// if err := downloadAndDecompress(downloadUrl, dbFile); err != nil {
+	// 	klog.Exitln(err)
+	// }
+	// klog.Infoln("downloaded")
+	// model, err := loadModel(dbFile.Name())
+	// if err != nil {
+	// 	klog.Exitln(err)
+	// }
+	// klog.Infof("model:\nAWS:%s\nGCP: %s\nAzure:%s", model.AWS.Stats(), model.GCP.Stats(), model.Azure.Stats())
+	// if err = dumpModel(model); err != nil {
+	// 	klog.Exitln(err)
+	// }
+	// klog.Infoln("done")
+
+	if err := downloadCloudPricingData(); err != nil {
 		klog.Exitln(err)
 	}
-	dbFile, err := os.CreateTemp("", "cloud_pricing*.csv")
-	if err != nil {
-		klog.Exitln(err)
-	}
-	defer os.Remove(dbFile.Name())
-	klog.Infof("downloading DB to %s", dbFile.Name())
-	if err := downloadAndDecompress(downloadUrl, dbFile); err != nil {
-		klog.Exitln(err)
-	}
-	klog.Infoln("downloaded")
-	model, err := loadModel(dbFile.Name())
-	if err != nil {
-		klog.Exitln(err)
-	}
-	klog.Infof("model:\nAWS:%s\nGCP: %s\nAzure:%s", model.AWS.Stats(), model.GCP.Stats(), model.Azure.Stats())
-	if err = dumpModel(model); err != nil {
-		klog.Exitln(err)
-	}
+
 	klog.Infoln("done")
+}
 
+// downloadCloudPricingData: download data
+func downloadCloudPricingData() error {
+	req, err := http.NewRequest("GET", priceDataUrl, nil)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dumpTimeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(resp.Status)
+	}
+	defer resp.Body.Close()
+	f, err := os.CreateTemp("", "cloud-pricing.json.gz")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	if err = f.Close(); err != nil {
+		return err
+	}
+
+	if _, err = os.Stat(dataDir); errors.Is(err, os.ErrNotExist) {
+		err = os.Mkdir(dataDir, os.ModePerm)
+		if err != nil {
+			return err
+		}
+	}
+
+	return os.Rename(f.Name(), path.Join(dataDir, dumpFileName))
 }
 
 type pricingRow struct {
